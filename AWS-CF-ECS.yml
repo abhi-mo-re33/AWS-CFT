@@ -1,0 +1,118 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Parameters:
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: 'VPC ID where ECS cluster will be created'
+  SubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: 'List of Subnet IDs where ECS instances will be placed'
+  ClusterName:
+    Type: String
+    Description: 'Name of the ECS cluster'
+  MinInstances:
+    Type: Number
+    Default: 2
+    Description: 'Minimum number of instances in ECS Auto Scaling Group'
+  MaxInstances:
+    Type: Number
+    Default: 3
+    Description: 'Maximum number of instances in ECS Auto Scaling Group'
+  RepositoryName:
+    Type: String
+    Description: 'Name of the ECR repository'
+  ContainerPort:
+    Type: Number
+    Default: 80
+    Description: 'Port on which the container listens'
+Resources:
+  ECSCluster:
+    Type: 'AWS::ECS::Cluster'
+    Properties:
+      ClusterName: !Ref ClusterName
+  ECSAutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      VPCZoneIdentifier: !Ref SubnetIds
+      LaunchTemplate:
+        Version: '1'
+        LaunchTemplateId: !Ref EC2LaunchTemplate
+        Version: !GetAtt EC2LaunchTemplate.LatestVersionNumber
+      MinSize: !Ref MinInstances
+      MaxSize: !Ref MaxInstances
+      Tags:
+        - Key: 'Name'
+          Value: !Ref ClusterName
+          PropagateAtLaunch: true
+        - Key: 'ClusterName'
+          Value: !Ref ClusterName
+          PropagateAtLaunch: true
+  EC2LaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateName: 'EC2LaunchTemplate'
+      VersionDescription: 'Initial version'
+      LaunchTemplateData:
+        ImageId: 'ami-0e3da4d8e192eb4b7'  # Specify your ECS optimized AMI
+        InstanceType: 't3a.small'  # Specify your instance type
+        UserData:
+          Fn::Base64: !Sub |
+            #!/bin/bash
+            echo ECS_CLUSTER=${ClusterName} >> /etc/ecs/ecs.config
+        SecurityGroupIds:
+          - !Ref ECSSecurityGroup
+  ECSSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      VpcId: !Ref VpcId
+      GroupDescription: 'Security group for ECS instances'
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: '0.0.0.0/0'
+  ECSALB:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Subnets: !Ref SubnetIds
+      SecurityGroups:
+        - !Ref ECSSecurityGroup
+  ECSALBListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+        - Type: fixed-response
+          FixedResponseConfig:
+            ContentType: 'text/plain'
+            StatusCode: '200'
+      LoadBalancerArn: !Ref ECSALB
+      Port: 80
+      Protocol: HTTP
+  ECRRepository:
+    Type: 'AWS::ECR::Repository'
+    Properties:
+      RepositoryName: !Ref RepositoryName
+  TaskDefinition:
+    Type: 'AWS::ECS::TaskDefinition'
+    Properties:
+      Family: 'my-ecs-task'
+      ContainerDefinitions:
+        - Name: 'my-container'
+          Image: !Sub '${ECRRepository.RepositoryUri}:latest'
+          PortMappings:
+            - ContainerPort: !Ref ContainerPort
+          Memory: 256
+  ECSALBTargetGroup:
+    Type: 'AWS::ElasticLoadBalancingV2::TargetGroup'
+    Properties:
+      HealthCheckIntervalSeconds: 30
+      HealthCheckProtocol: 'HTTP'
+      HealthCheckTimeoutSeconds: 10
+      HealthyThresholdCount: 3
+      Port: !Ref ContainerPort
+      Protocol: 'HTTP'
+      UnhealthyThresholdCount: 3
+      VpcId: !Ref VpcId
+Outputs:
+  ECRRepositoryURI:
+    Description: 'URI of the created ECR repository'
+    Value: !Sub '${ECRRepository.RepositoryUri}'
